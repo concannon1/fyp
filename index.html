@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>FYP</title>
+		<meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+		<meta charset="utf-8">
+		<style>
+			/* Always set the map height explicitly to define the size of the div
+			 * element that contains the map. */
+			#map{
+				position:static;
+				float:bottom;
+				height: 50%;
+				width:100%;
+			}
+ 
+			form { margin-top: 15px; }
+			form > input { margin-right: 15px; }
+
+			#my_camera{
+				position:top;
+				height:100%;
+				width:100%;
+			}
+			
+			#chart{
+				position:relative;	
+			}
+				
+			video{
+				width:100%;
+				height:100%;
+				vertical-align:middle;
+				
+			}
+			
+			#overlay {
+				background: rgba(255,255,255,0);
+				position: absolute;
+				top: 0; right: 0; bottom: 0; left: 0;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				z-index: 5;
+			}
+
+			html{
+				height:100%;
+				width:100%
+				margin: 0;
+				padding: 0;
+			}
+
+			body {		
+				height: 100%;
+				width: 100%;
+				margin: 0;
+				padding: 0;
+			}
+	
+		</style>
+		<script src="https://www.google.com/jsapi"></script>
+		<script src="functions.js"></script>
+	</head>
+	<body>
+		<div id="my_camera">
+			<video id="video" autoplay></video>
+			<div id="overlay">
+					<canvas id="canvas">No canvas support</canvas>
+				</div>
+			</div>
+			<script type="text/javascript">
+				var video = document.getElementById('video');
+				var overlay = document.getElementById('overlay');
+				const constraints = {advanced:[{facingMode: "environment"}]};
+				var bod = document.querySelector('body');
+				// Get access to the camera
+				if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+				// Not adding `{ audio: true }` since we only want video now
+					navigator.mediaDevices.getUserMedia({ video: constraints }).then(function(stream) {
+						video.src = window.URL.createObjectURL(stream);
+						video.play();
+					});
+				}
+
+				navigator.mediaDevices.enumerateDevices().then(function(devices) {
+				})
+				.catch(function(err) {
+					console.log(err.name + ": " + err.message);
+				});
+			</script>
+		</div>
+
+		<div id="map"></div>
+		<script>
+			const DISTANCE_BETWEEN_GRID_POINTS = 100; // to create a 2d array of elevations that are 100 metres away from eachother
+			const RADIUS_OF_EARTH = 6378100;
+			const ONE_DEGREE_OF_LATITUDE = 111000;
+			const DISTANCE_TO_HORIZON = 3500; //distance in metres, on average
+			google.load('visualization', '1', {packages: ['columnchart']});
+			var map;
+			var orientationEventCounter = 100;
+			function initMap() {
+				map = new google.maps.Map(document.getElementById('map'), {
+					center: {lat: 0, lng: 0},
+					zoom: 16
+				});
+			}
+	
+			var output = document.querySelector('.counter');
+			var deviceOrientation;
+			function handleOrientation(event){
+				if (navigator.geolocation && orientationEventCounter == 100) {
+				
+					orientationEventCounter = 0;
+					navigator.geolocation.getCurrentPosition(function(position) {
+						var pos = {
+							lat: position.coords.latitude,
+							lng: position.coords.longitude
+						};
+						deviceOrientation = event.gamma;
+						var leftmostView = coordsGivenPointDistanceAndAngle(pos, DISTANCE_TO_HORIZON, (deviceOrientation - 45 + 360/*+360 to account for negatives*/)%360)
+						var rightmostView = coordsGivenPointDistanceAndAngle(pos, DISTANCE_TO_HORIZON, (deviceOrientation + 45 + 360/*+360 to account for negatives*/)%360)
+						map.setCenter(pos);
+						
+						
+						var horizonCoords = coordsGivenPointDistanceAndAngle(pos,3500,deviceOrientation);
+						console.log("coordinates of horizon = " + horizonCoords.lat+","+horizonCoords.lng);
+						//include to draw line from user to horizon
+						//new google.maps.Polyline({path:[pos,horizonCoords],strokeColor: '#000011',strokeOpacity: 1,map: map});
+						var elevator = new google.maps.ElevationService;
+						
+						//step 1: get points 3500m away at event.alpha-45, alpha-42, alpha-33 etc 
+						//step 2: plot lines from origin to each point
+						//step 3: find angles created by the user and the tops of each peak, along every line
+						
+						//step 1:
+						var points = [];
+						// 3 degree sweeps
+						for(var i = -45; i <= 45; i += 3){
+							points.push(coordsGivenPointDistanceAndAngle(pos, DISTANCE_TO_HORIZON, (deviceOrientation+i + 360/*+360 to account for negatives*/)%360));
+						}
+						//step 2:
+						var paths = []
+						for(var i = 0; i < points.length; i++)
+							paths.push([pos,points[i]]);
+							
+						//step 3:
+						var biggestAngles = [];
+						var biggestAngleCoords = [];
+						var biggestAngleElevations = [];
+						var currentLine = 0;
+						var i = 0;
+						
+						var loopArray = function(paths){
+
+							//new google.maps.Polyline({path: paths[i],strokeColor: '#000011',strokeOpacity: 1,map: map});
+							elevator.getElevationAlongPath({'path':paths[i], 'samples':35}, (elevations, status) =>{
+								if(status != 'OK'){
+									console.log(status + ", i = " +i)
+									//wait and then try again:
+									for(var x=1000;x>0;x--) console.log(x);
+									loopArray(paths);
+								}
+								else{
+									
+									//get the biggest angle for this line
+									var biggestAngle = 0;
+									var biggestAngleIndex = 0;
+									for(var j = 1; j < elevations.length; j++){
+										var currentAngle = Math.atan((elevations[j].elevation - elevations[0].elevation)/(100*j))//j must be multiplied by 3500/number of samples
+										if(currentAngle > biggestAngle){
+											biggestAngle = currentAngle;
+											biggestAngleIndex = j;
+										}
+									}
+									
+									biggestAngles.push(biggestAngle);
+									biggestAngleCoords.push(elevations[biggestAngleIndex].location);
+									biggestAngleElevations.push(elevations[biggestAngleIndex].elevation);
+									i++;
+									if(i < paths.length){
+										loopArray(paths);
+									}
+									else{
+										//include draw visible horizon line on map
+										//new google.maps.Polyline({path:biggestAngleCoords,strokeColor:	'#000000',strokeOpacity: 1,map: map});
+										var scaledHorizon = scaleAnglesInArray(biggestAngles);
+								       	//Start drawing horizon line on camera
+								  	    var canvas = document.getElementById("canvas");
+										var ctx = canvas.getContext("2d");
+										var video = document.getElementById("video");
+										canvas.width = video.clientWidth;
+										canvas.height = video.clientHeight;
+										ctx.beginPath();
+										//include this to draw the horizon onscreen
+										/*
+										ctx.moveTo(0, canvas.height - (canvas.height*scaledHorizon[0]))
+										
+										for(var j = 1; j < scaledHorizon.length;j++){
+											ctx.lineTo(((canvas.width/31) * j), canvas.height - (canvas.height*scaledHorizon[j]));
+										}*/
+										
+										ctx.lineWidth = 5;
+										ctx.strokeStyle = "black";
+										ctx.stroke();
+										ctx.font= "30px Calibri";
+										ctx.fillStyle = "black";
+										ctx.textAlign = "center"
+										var posLatLng = new google.maps.LatLng(pos.lat, pos.lng);
+										var request = {
+											location: posLatLng,
+											radius: DISTANCE_TO_HORIZON,
+											type: ['natural_feature']
+										  };
+
+										var service = new google.maps.places.PlacesService(map);
+										service.nearbySearch(request, (results, status)=>{
+											if(status == google.maps.places.PlacesServiceStatus.OK){
+												
+												for (var j = 0; j < results.length; j++) {
+													
+													var currentLandmark = {lat:results[j].geometry.location.lat(),lng:results[j].geometry.location.lng()}
+													if(liesWithinSector(currentLandmark, pos, leftmostView, rightmostView)){
+														var xScale = xCoordOfLandmark(currentLandmark, pos, leftmostView, rightmostView);
+														if(distanceBetweenTwoPoints(pos, currentLandmark) < distanceBetweenTwoPoints(pos, biggestAngleCoords[Math.floor(xScale*30)])+20){
+															var marker = new google.maps.Marker({
+																position: currentLandmark,
+																map: map
+															});
+															console.log(results[j].name+" " +distanceBetweenTwoPoints(pos, currentLandmark))
+															var x = xScale * canvas.width;
+															ctx.beginPath();
+															var y = canvas.height - (canvas.height*scaledHorizon[Math.floor(xScale*30)]) - canvas.height/2 - 45;
+														
+															var w = 4*results[j].name.length + 135;
+															var h = 45;
+															ctx.moveTo(x, y);
+															ctx.arcTo(x + w, y, x + w, y + 5, 5);
+															ctx.arcTo(x + w, y + h, x + w - 5, y + h, 5);
+															ctx.arcTo(x, y + h, x, y + h - 5, 5);
+															ctx.arcTo(x, y, x + 5, y, 5);
+															ctx.fillStyle = "white";
+															ctx.fill();
+															ctx.strokeStyle = "black";
+															ctx.stroke();
+														
+															// draw text
+															ctx.fillStyle = "black";
+															ctx.fillText(results[j].name, x + 92, y+30);
+														}
+													}
+												}
+											}
+										
+										});
+									}
+								}
+							});
+
+						}
+						loopArray(paths);
+						
+					},function() {console.log("consent to location")},{timeout:10000});
+				}
+				else{
+					orientationEventCounter++;
+				}
+			}
+
+			window.addEventListener('deviceorientation', handleOrientation);
+			
+
+		</script>
+		<script async defer
+			src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBx11PAjXcTybOGZKLAOBLCamxQd0pQAI8&libraries=places&callback=initMap">
+		</script>
+	</body>
+</html>
